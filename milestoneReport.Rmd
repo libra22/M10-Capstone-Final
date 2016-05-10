@@ -1,0 +1,499 @@
+---
+title: "Milestone Report - Capstone Project"
+author: "M Poobalan"
+date: "March 18, 2016"
+output:
+  html_document:
+    highlight: tango
+    toc: yes
+    toc_depth: 3
+---
+#Introduction
+
+This document presents the analysis of datasets in order to create a text predictor application that uses a prediction model based on input of one to three words by user. This is a brief presentation designed to highlight key ideas and points to managers who are not from data science background. The basis for the prediction model is using natural language processing and text mining techniques.
+
+
+Data for this project is obtained from SwiftKey (see Reference below for link) and contains 3 types of textual data - from **Twitter**, **blogs** and **news**, each available in four languages. For the purpose of this project, data for **English** language is used. The dataset will be sampled and the sample will processed into a collection of text (known as a corpus). The corpus is cleaned and then manipulated using natural language processing (NLP) techniques, including creating statistical probabilities of the word occurences (using tokenization). Finally a model is proposed for the text prediction.
+
+
+For simplicity, most of the codes used to generate this documents will be not be displayed. However, it can be accessed at [Github](https://github.com/libra22/M10-Capstone) for verification purposes.
+
+
+#Data Loading
+```{r loading, cache=TRUE, warning=FALSE}
+datatwitter <-readLines(conn <-file("./data/en_US.twitter.txt",encoding="UTF-8"))
+close(conn)
+datablog <- readLines(conn <-file("./data/en_US.blogs.txt",encoding="UTF-8"))
+close(conn)
+datanews <- readLines(conn <-file("./data/en_US.news.txt","rb",encoding="UTF-8"))
+close(conn)
+```
+
+
+#Data Exploration
+The file size, object size (in memory) and number of lines in each dataset is quite big as shown below. The average words per line is also reflective of the type of dataset. Blogs, even with least lines, have most number of words as it is not subject to any limitations compared to news or twitter data.  Twitter with its limit of 140 characters per tweet naturally has lower average compared to blog and news.
+
+When combined, the total lines are over 4 million with more than 102 million words. Average words is 24 which is influenced by Twitter dataset that has most lines but least words.
+
+Due to large data size and computational limitation, the number of unique words could not be obtained for the full dataset. However, it will be calculated for the sample dataset later.
+
+```{r basicinfo, warning=FALSE, echo=FALSE, results='hide', cache=TRUE}
+
+library(stringi)
+
+#get files size
+twtfilesize <- format(file.info("./data/en_US.twitter.txt")$size/1024/1000,digits=6)
+blogfilesize <- format(file.info("./data/en_US.blogs.txt")$size/1024/1000,digits=6)
+newsfilesize <- format(file.info("./data/en_US.news.txt")$size/1024/1000,digits=6)
+
+#combine all datasets into one
+alldata <- c(datatwitter,datablog,datanews)
+
+#get object size
+twtobjsize <- format(object.size(datatwitter),units="auto")
+blogobjsize <- format(object.size(datablog),units="auto")
+newsobjsize <- format(object.size(datanews),units="auto")
+allobjsize <- format(object.size(alldata),units="auto")
+  
+#get num of lines
+twtlines <- prettyNum(length(datatwitter),big.mark = ",",width=7)
+bloglines <- prettyNum(length(datablog),big.mark = ",",width=8)
+newslines <- prettyNum(length(datanews),big.mark = ",",width=7)
+alllines <- prettyNum(length(alldata),big.mark = ",",width=7)
+
+#get num of words
+twtwordcount <- stri_count_words(datatwitter)
+blogwordcount <- stri_count_words(datablog)
+newswordcount <- stri_count_words(datanews)
+allwordcount <- stri_count_words(alldata)
+
+#combine into table
+twtinfo <- c(twtfilesize,twtobjsize,twtlines,prettyNum(sum(twtwordcount),big.mark = ",",width=8),prettyNum(mean(twtwordcount),big.mark = ",",width=4))
+bloginfo <- c(blogfilesize,blogobjsize,bloglines,prettyNum(sum(blogwordcount),big.mark = ",",width=8),prettyNum(mean(blogwordcount),big.mark = ",",width=4))
+newsinfo <- c(newsfilesize,newsobjsize,newslines,prettyNum(sum(newswordcount),big.mark = ",",width=8),prettyNum(mean(newswordcount),big.mark = ",",width=4))
+allinfo <- c("NA",allobjsize,alllines,prettyNum(sum(allwordcount),big.mark = ",",width=8),prettyNum(mean(allwordcount),big.mark = ",",width=4))
+datainfo <- rbind(twtinfo, bloginfo,newsinfo,allinfo)
+
+#add row and column names
+rownames(datainfo) <- c("Twitter", "Blogs", "News","Combined")
+colnames(datainfo) <- c("File Size (MB)", "Object Size", "Lines","Number of Words", "Mean Number of Words")
+
+library(knitr)
+```
+
+```{r showinfo, echo=FALSE, cache=TRUE}
+knitr::kable(datainfo)
+```
+
+```{r clearmemory1, message=FALSE, results='hide',echo=FALSE, warning=FALSE}
+#clear memory of unused objects
+rm(sampleallobjsize,samplealllines,sampleallwordcount,sampleallinfo,sampletwtobjsize,sampleblogobjsize,samplenewsobjsize,sampletwtlines,samplebloglines,samplenewslines,sampletwtwordcount,sampleblogwordcount,samplenewswordcount,sampletwtinfo,samplebloginfo,samplenewsinfo,sampledatainfo,samplealluniquewords,sampletwtuniquewords,samplebloguniquewords,samplenewsuniquewords)
+```
+
+#Data Preprocessing 
+For the purpose of this project, data cleansing will be done after creating a corpus (a text document) from the sample. Removal of empty lines (or null values, NAs) ore replacing certain values (like zero or other integers) would not be neccessary at this stage as it does not affect the prediction model.
+
+#Sample Creation
+Due to computational resource limitation, a sample of 1% of dataset is used. This is done by getting 1% from each dataset and then combining them, rather than getting the sample directly from the combined set. This is to mimic the actual data representation by the three datasets. A seed value is set to ensure reproducibility.
+
+
+The sample data is further encoded into ASCII to ensure any unreadable characters are removed.
+
+``` {r createsample, message=FALSE, warning=FALSE, results='hide'}
+#set seed for reproducibility
+set.seed(1234)
+
+#create sample 1%
+sampletwt <- sample(datatwitter,round(0.01*length(datatwitter)))
+sampleblog <- sample(datablog,round(0.01*length(datablog)))
+samplenews <- sample(datanews,round(0.01*length(datanews)))
+allsample <- c(sampletwt,sampleblog,samplenews)
+
+#clean to ensure proper encoding. removes all the weird, unintelligible word or characters.
+sampletwt <- iconv(sampletwt, 'UTF-8', 'ASCII', "byte")
+sampleblog <- iconv(sampleblog, 'UTF-8', 'ASCII', "byte")
+samplenews <- iconv(samplenews, 'UTF-8', 'ASCII', "byte")
+allsample <- iconv(allsample, 'UTF-8', 'ASCII', "byte")
+```
+
+
+##Sample Data Exploration
+```{r sampleexplore, echo=FALSE, results='hide'}
+library(stringi)
+#get sample object size
+sampletwtobjsize <- format(object.size(sampletwt),units="auto")
+sampleblogobjsize <- format(object.size(sampleblog),units="auto")
+samplenewsobjsize <- format(object.size(samplenews),units="auto")
+sampleallobjsize <- format(object.size(allsample),units="auto")
+
+#get sample num of lines
+sampletwtlines <- prettyNum(length(sampletwt),big.mark = ",",width=6)
+samplebloglines <- prettyNum(length(sampleblog),big.mark = ",",width=6)
+samplenewslines <- prettyNum(length(samplenews),big.mark = ",",width=6)
+samplealllines <- prettyNum(length(allsample),big.mark = ",",width=6)
+
+#get sample num of words
+sampletwtwordcount <- stri_count_words(sampletwt) 
+sampleblogwordcount <- stri_count_words(sampleblog) 
+samplenewswordcount <- stri_count_words(samplenews) 
+sampleallwordcount <- stri_count_words(allsample) 
+
+#get unique number of words
+sampletwtuniquewords <- stri_unique(stri_extract_all_words(sampletwt, simplify=TRUE))
+samplebloguniquewords <- stri_unique(stri_extract_all_words(sampleblog, simplify=TRUE))
+samplenewsuniquewords <- stri_unique(stri_extract_all_words(samplenews, simplify=TRUE))
+samplealluniquewords <- stri_unique(stri_extract_all_words(allsample, simplify=TRUE))
+
+#combine sample into table
+sampletwtinfo <- c(sampletwtobjsize,sampletwtlines,prettyNum(sum(sampletwtwordcount),big.mark = ",",width=7),prettyNum(mean(sampletwtwordcount),big.mark = ",",width=4),prettyNum(length(sampletwtuniquewords),big.mark = ",",width=5),prettyNum(length(sampletwtuniquewords)/sum(sampletwtwordcount)*100,width=4))
+samplebloginfo <- c(sampleblogobjsize,samplebloglines,prettyNum(sum(sampleblogwordcount),big.mark = ",",width=7),prettyNum(mean(sampleblogwordcount),big.mark = ",",width=4),prettyNum(length(samplebloguniquewords),big.mark = ",",width=5),prettyNum(length(samplebloguniquewords)/sum(sampleblogwordcount)*100,width=4))
+samplenewsinfo <- c(samplenewsobjsize,samplenewslines,prettyNum(sum(samplenewswordcount),big.mark = ",",width=7),prettyNum(mean(samplenewswordcount),big.mark = ",",width=4),prettyNum(length(samplenewsuniquewords),big.mark = ",",width=5),prettyNum(length(samplenewsuniquewords)/sum(samplenewswordcount)*100,width=4))
+sampleallinfo <- c(sampleallobjsize,samplealllines,prettyNum(sum(sampleallwordcount),big.mark = ",",width=7),prettyNum(mean(sampleallwordcount),big.mark = ",",width=4),prettyNum(length(samplealluniquewords),big.mark = ",",width=5),prettyNum(length(samplealluniquewords)/sum(sampleallwordcount)*100,width=4))
+sampledatainfo <- rbind(sampletwtinfo,samplebloginfo,samplenewsinfo,sampleallinfo)
+
+#add row and column names
+rownames(sampledatainfo) <- c("Twitter", "Blogs", "News","Combined")
+colnames(sampledatainfo) <- c("Object Size", "Lines","Number of Words", "Mean Number of Words", "Unique Words", "% Unique Words")
+```
+
+
+Simple exploration of the data, similar to the full dataset, is done. Comparatively, the mean number of words for samples' are approximately same to the full datasets: Twitter (`r  prettyNum(mean(sampletwtwordcount),big.mark = ",",width=4)` vs `r prettyNum(mean(twtwordcount),big.mark = ",",width=4)`), blog (`r  prettyNum(mean(sampleblogwordcount),big.mark = ",",width=4)` vs `r prettyNum(mean(blogwordcount),big.mark = ",",width=4)`), news (`r  prettyNum(mean(samplenewswordcount),big.mark = ",",width=4)` vs `r prettyNum(mean(newswordcount),big.mark = ",",width=4)`) and combined sample (`r  prettyNum(mean(sampleallwordcount),big.mark = ",",width=4)` vs `r prettyNum(mean(allwordcount),big.mark = ",",width=4)`).
+
+
+However, in terms of unique words, all three samples have higher percentage of unique words, but when combined, the percentage dropped. This is expected as there will be a significant number of duplicate words when the datasets are combined.
+
+
+```{r sampleshowinfo, echo=FALSE}
+knitr::kable(sampledatainfo)
+```
+
+
+#Sample Data Visualization
+Wordcloud of the individual sample datasets and combined sample datasets is created. The top 50 words is displayed.
+
+
+###Wordcloud for Tweet sample dataset
+```{r wctwtsample, echo=FALSE, warning=FALSE, message=FALSE}
+library(wordcloud)
+wordcloud(sampletwt,max.words = 50, random.color = TRUE, random.order = FALSE, colors = brewer.pal(12,"Set3"))
+```
+
+
+###Wordcloud for blog sample dataset
+```{r wcblogsample, echo=FALSE, warning=FALSE}
+wordcloud(sampleblog,max.words = 50, random.color = TRUE, random.order = FALSE, colors = brewer.pal(12,"Set3"))
+```
+
+
+###Wordcloud for news sample dataset
+```{r wcnewssample, echo=FALSE, warning=FALSE}
+wordcloud(samplenews,max.words = 50, random.color = TRUE, random.order = FALSE, colors = brewer.pal(12,"Set3"))
+```
+
+
+###Wordcloud for combined sample dataset
+```{r wcallsample, echo=FALSE, warning=FALSE}
+wordcloud(allsample,max.words = 50, random.color = TRUE, random.order = FALSE, colors = brewer.pal(12,"Set3"))
+```
+
+
+```{r clearmemory2, message=FALSE, results='hide',echo=FALSE, warning=FALSE}
+#clear memory of unused objects
+rm(sampleallobjsize,samplealllines,sampleallwordcount,sampleallinfo,sampletwtobjsize,sampleblogobjsize,samplenewsobjsize,sampletwtlines,samplebloglines,samplenewslines,sampletwtwordcount,sampleblogwordcount,samplenewswordcount,sampletwtinfo,samplebloginfo,samplenewsinfo,sampledatainfo)
+```
+
+
+#Creating Corpus
+The sample dataset is converted to a corpus format using `tm` package. A corpus is basically collection of text. This conversion will enable further analysis of the dataset.
+
+```{r createcorpus, echo=FALSE, message=FALSE, results='hide'}
+library(tm)
+allsample.vec <- VectorSource(allsample)
+allsample.corpus <- Corpus(allsample.vec)
+```
+
+```{r cleanmemory4, echo=FALSE, results='hide'}
+#clean memory
+rm(allsample)
+```
+
+##Corpus Cleaning
+The following steps are done in cleaning up the corpus:
+
+
+| Order    | Step                               |
+|----------|------------------------------------|
+|  1       | Changing all words to lower case   |
+|  2       | Removing punctuations              | 
+|  3       | Removing numbers                   | 
+|  4       | Removing profanities               | 
+|  5       | Removing extra whitespaces         | 
+
+
+No stemming (defined as reducing words to their root words or singularity, e.g. buyer -> buy, dogs -> dog) is done as it may affect word predictions. Similarly, stopwords (words that are common in certain language, such as "the", "a", "is" etc) is also not removed as these feature commonly in text and removal will affect the prediction modelling.
+
+##Dictionary
+The list of profanities is retrieved from a github repository (listed in Reference).
+
+
+```{r profanitylist, echo=FALSE,cache=TRUE, results='hide'}
+library(RCurl)
+
+# url pointing to the data source
+url <- "https://raw.githubusercontent.com/shutterstock/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/master/en"
+profanitylist <- getURL(url,ssl.verifypeer = FALSE)
+
+#read into a data frame, then convert to character vector
+profanitylist <- read.csv(textConnection(profanitylist),header=FALSE) 
+plist <- as.vector(profanitylist$V1)
+
+#clean memory
+rm(url,datablog,datanews,datatwitter,sampleblog,samplenews,sampletwt)
+```
+
+
+The commands to clean the corpus is as below:
+
+
+```{r cleaningcorpus, results='hide'}
+allsample.corpus <- tm_map(allsample.corpus, content_transformer(tolower))
+allsample.corpus <- tm_map(allsample.corpus,removePunctuation)
+allsample.corpus <- tm_map(allsample.corpus,removeNumbers)
+allsample.corpus <- tm_map(allsample.corpus, removeWords,plist)
+allsample.corpus <- tm_map(allsample.corpus,stripWhitespace)
+allsample.corpus <- tm_map(allsample.corpus,PlainTextDocument)
+```
+
+
+#n-gram Tokenization
+Once some cleaning and processing is done on the corpus, we proceed to create a **term-document matrix (TDM)**, which is basically a matrix (or table) that maps the occurence of the text (arranged as rows) against the number of documents (arranged as columns). Documents here will refer to each line of the dataset (i.e. a line may be a tweet, a blog article or a news article). The occurence of the term is calculated by how many **previous** words we want to consider in order to predict the next word. This is known as **n-gram tokenization**, whereby "n" can be 1, 2, 3 and so on. An n-gram is a contiguous sequence of n items from a given sequence of text or speech (the corpus). A single word gram is known as an **unigram**. A unigram TDM entry can be occurence of the word "book" in all the documents. A two word gram is known as **bigram**. a bigram TDM entry can be probability occurence of the term "read book" in the documents. A three word gram is a **trigram**. Example would be "to read book" term probability occurence in documents. And so on for fourgram, fivegram and other grams. 
+
+
+For the purpose of this project, we look at up to fivegram TDMs. 
+
+
+Commands to set token:
+
+```{r tokenization, results='hide'}
+library(RWeka)
+u_token <- function(x) NGramTokenizer(x, Weka_control(min = 1, max = 1))
+bi_token <- function(x) NGramTokenizer(x, Weka_control(min = 2, max = 2))
+tri_token <- function(x) NGramTokenizer(x, Weka_control(min = 3, max = 3))
+four_token <- function(x) NGramTokenizer(x, Weka_control(min = 4, max = 4))
+five_token <- function(x) NGramTokenizer(x, Weka_control(min = 5, max = 5))
+```
+
+
+Creation of TermDocumentMatrix:
+
+```{r ngrams}
+tdm1 <- TermDocumentMatrix(allsample.corpus, control=list(tokenize=u_token))
+tdm2 <- TermDocumentMatrix(allsample.corpus, control=list(tokenize=bi_token))
+tdm3 <- TermDocumentMatrix(allsample.corpus, control=list(tokenize=tri_token))
+tdm4 <- TermDocumentMatrix(allsample.corpus, control=list(tokenize=four_token))
+tdm5 <- TermDocumentMatrix(allsample.corpus, control=list(tokenize=five_token))
+```
+
+``` {r cleanmemory5, echo=FALSE, results='hide'}
+rm(plist,allsample.vec)
+```
+
+#Sparsing and Further Filtering
+It is possible than many of the entries in TDMs consist of zero or ones, meaning words or terms that a very rare. We can further reduce the size of the TDM by removing these entries. By using `inspect()`, it is found that all the five TDMs have 100% sparsity. However, the unigram dan bigram TDMs can be reduced using RemoveSparseTerms while the trigram, fourgram and fivegrams, having too little non-sparse/sparse ratio ends up with TDM with zero entries. Thus for these 3 TDMs (trigram,fourgram, and fivegram), a filtering of terms with at least certain frequency of occurence is done. trigram is filtered by frequency of at least 10, fourgram by frequency of at least 5 and fivegram by frequency of at least 3.
+
+
+The reason for sparsing and filtering is also due to memory limitation of the computer, whereby converting the raw TDMs to matrix generates very large object sizes. By sparsing or filtering, the size is reduced for plotting purposes.
+
+```{r inspect, results='hide', eval=FALSE, warning=FALSE}
+#check sparsity
+#inspect(tdm1)
+#inspect(tdm2)
+#inspect(tdm3)
+#inspect(tdm4)
+#inspect(tdm5)
+```
+
+```{r sparsity, results='hide', warning=FALSE}
+#remove sparse terms
+tdm1a <- removeSparseTerms(tdm1,0.99)
+tdm2a <- removeSparseTerms(tdm2,0.99)
+
+#convert to matrix
+tdm1matrix <- as.matrix(tdm1a)
+tdm2matrix <- as.matrix(tdm2a)
+
+#get terms, frequency and convert to data frame
+tdm1freq <- sort(rowSums(tdm1matrix),decreasing=TRUE)
+tdm1df <- data.frame(term=names(tdm1freq),frequency =tdm1freq)
+tdm2freq <- sort(rowSums(tdm2matrix),decreasing=TRUE)
+tdm2df <- data.frame(term=names(tdm2freq),frequency =tdm2freq)
+
+#for trigram, fourgram and fivegram, the matrix is too big, thus have to select subset and then convert to data frame.
+tdm3a <- findFreqTerms(tdm3, lowfreq = 10)
+tdm3matrix <- as.matrix(tdm3[tdm3a,])
+tdm3freq <- sort(rowSums(tdm3matrix), decreasing = TRUE)
+tdm3df <- data.frame(term=names(tdm3freq), frequency=tdm3freq)
+tdm4a <- findFreqTerms(tdm4, lowfreq = 5)
+tdm4matrix <- as.matrix(tdm4[tdm4a,])
+tdm4freq <- sort(rowSums(tdm4matrix), decreasing = TRUE)
+tdm4df <- data.frame(term=names(tdm4freq), frequency=tdm4freq)
+tdm5a <- findFreqTerms(tdm5, lowfreq = 3)
+tdm5matrix <- as.matrix(tdm5[tdm5a,])
+tdm5freq <- sort(rowSums(tdm5matrix), decreasing = TRUE)
+tdm5df <- data.frame(term=names(tdm5freq), frequency=tdm5freq)
+
+```
+##Sample Data
+Below are sample data from the TDMs, showing the top 10 elements in each of the n-grams:
+
+###Unigram
+```{r unigramtable, echo=FALSE}
+knitr::kable(head(tdm1df,10)) 
+```
+
+
+###Bigram
+```{r bigramtable}
+knitr::kable(head(tdm2df,10)) 
+```
+
+
+###Trigram
+```{r trigramtable}
+knitr::kable(head(tdm3df,10)) 
+```
+
+
+###Fourgram
+```{r fourgramtable}
+knitr::kable(head(tdm4df,10)) 
+```
+
+
+###Fivegram
+```{r fivegramtable}
+knitr::kable(head(tdm5df,10)) 
+```
+
+
+``` {r cleanmemory6, results='hide'}
+#clean memory
+rm(tdm1a,tdm1freq,tdm1matrix,tdm2a,tdm2freq,tdm2matrix,tdm3a,tdm3freq,tdm3matrix,tdm4a,tdm4freq,tdm4matrix,tdm5a,tdm5freq,tdm5matrix)
+rm(tdm1,tdm2,tdm3,tdm4,tdm5)
+```
+
+
+#Words Frequency Visualization
+Wordcloud plots are created to show the top 50 terms for each of the TDM and also compared with top 50 terms for the corpus.
+
+
+###Wordcloud for unigram
+```{r wordcloudtdm1, echo="FALSE", warning=FALSE}
+wordcloud(tdm1df$term,tdm1df$frequency,min.freq=200,max.words = 50, random.color = TRUE, random.order = FALSE, colors = brewer.pal(12,"Set3"))
+```
+
+
+###Wordcloud for bigram
+```{r wordcloudtdm2, echo="FALSE", warning=FALSE}
+wordcloud(tdm2df$term,tdm2df$frequency,min.freq=200,max.words = 50, random.color = TRUE, random.order = FALSE, colors = brewer.pal(12,"Set3"))
+```
+
+
+###Wordcloud for trigram
+```{r wordcloudtdm3, echo="FALSE", warning=FALSE}
+
+wordcloud(tdm3df$term,tdm3df$frequency,max.words = 50, random.color = TRUE, random.order = FALSE, colors = brewer.pal(12,"Set3"))
+```
+
+
+###Wordcloud for fourgram
+```{r wordcloudtdm4, echo="FALSE", warning=FALSE}
+
+wordcloud(tdm4df$term,tdm4df$frequency,max.words = 50, random.color = TRUE, random.order = FALSE, colors = brewer.pal(12,"Set3"))
+```
+
+
+###Wordcloud for fivegram
+```{r wordcloudtdm5, echo="FALSE", warning=FALSE}
+
+wordcloud(tdm5df$term,tdm5df$frequency,max.words = 50, random.color = TRUE, random.order = FALSE, colors = brewer.pal(12,"Set3"))
+```
+
+
+###Wordcloud for Corpus
+```{r wordcloudcorpus, echo="FALSE", warning=FALSE}
+
+wordcloud(allsample.corpus,max.words = 50, random.color = TRUE, random.order = FALSE, colors = brewer.pal(12,"Set3"))
+```
+
+##Histogram
+We further explore using histograms to see the trend of the word/term occurences. The graphs below display top 30 terms for each of the TDMs.
+
+```{r plotg1, fig.align='center', message=FALSE}
+library(ggplot2)
+g1 <- ggplot(head(tdm1df,30), aes(x=reorder(term, frequency), y=frequency, fill=frequency)) +
+  geom_bar(stat = "identity") +  coord_flip() +  theme_gray() + 
+  theme(legend.title=element_blank()) +
+  xlab("Unigram") + ylab("Frequency") +
+  labs(title = "Top 30 Unigrams by Frequency")
+print(g1)
+```
+
+For unigram plot above, as expected, common English words dominate the list. This is due to not cleaning the corpus using the stopwords.
+
+```{r plotg2, fig.align='center', message=FALSE}
+g2 <- ggplot(head(tdm2df,30), aes(x=reorder(term, frequency), y=frequency, fill=frequency)) +
+  geom_bar(stat = "identity") +  coord_flip() +  theme_gray() + 
+  theme(legend.title=element_blank()) +
+  xlab("Bigram") + ylab("Frequency") +
+  labs(title = "Top 30 Bigrams by Frequency")
+print(g2)
+```
+
+```{r plotg3, fig.align='center', message=FALSE}
+g3 <- ggplot(head(tdm3df,30), aes(x=reorder(term, frequency), y=frequency, fill=frequency)) +
+  geom_bar(stat = "identity") +  coord_flip() + theme_gray() + 
+  theme(legend.title=element_blank()) +
+  xlab("Trigram") + ylab("Frequency") + 
+  labs(title = "Top 30 Trigrams by Frequency")
+print(g3)
+```
+
+```{r plotg4, fig.align='center', message=FALSE}
+g4 <- ggplot(head(tdm4df,30), aes(x=reorder(term, frequency), y=frequency, fill=frequency)) +
+  geom_bar(stat = "identity") +  coord_flip() + theme_gray() +
+  theme(legend.title=element_blank()) +
+  xlab("Fourgram") + ylab("Frequency") +
+  labs(title = "Top 30 Fourgrams by Frequency")
+print(g4)
+```
+
+```{r plotg5, fig.align='center', message=FALSE}
+g5 <- ggplot(head(tdm5df,30), aes(x=reorder(term, frequency), y=frequency, fill=frequency)) +
+  geom_bar(stat = "identity") +  coord_flip() +  theme_gray() + 
+  theme(legend.title=element_blank()) +
+  xlab("Fivegram") + ylab("Frequency") +
+  labs(title = "Top 30 Fivegrams by Frequency")
+print(g5)
+```
+
+
+#Way Forward
+The next step is to create a prediction model based on the n-gram tokenizations. We need to decide on using 1,2, o 3 (or higher level n-gram) for the model. For the purpose of this project, a 2 or 3 gram model is proposed.
+
+
+We  also need to consider how to handles text input that does not match the n-grams. This is highly likely as a person may enter series of text that doesn't match any entries in the corpus. This may involve smoothing and backoff models.
+
+
+We also need to consider how to improve the efficiency and accuracy of the model, with regards to limitations of device memory (RAM) and processing time, especially on mobile devices.
+
+In the end, the application need to make use of a small model that is reasonably accurate and fast, as a tradeoff due to computing hardware limitations.
+
+
+#References
+
+1. Data source from SwiftKey - [download zip file](<https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip)
+2. Dataset Corpus (HC Corpora) - [Read me file](http://www.corpora.heliohost.org/aboutcorpus.html)
+3. Source codes - [Github site](https://github.com/libra22/M10-Capstone)
+4. Blacklisted words - [Shutterstock Github Site (raw)](https://raw.githubusercontent.com/shutterstock/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/master/en)
+ 

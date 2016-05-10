@@ -1,0 +1,8 @@
+name: TextPredictor
+account: libra22
+server: shinyapps.io
+bundleId: 429450
+url: https://libra22.shinyapps.io/TextPredictor/
+when: 1461327493.89307
+asMultiple: FALSE
+asStatic: FALSE
